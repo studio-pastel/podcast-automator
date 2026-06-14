@@ -72,9 +72,8 @@ jobs:
           # 2. イントロ ➔ BGM付きトーク ➔ アウトロ の順でガッチャンコする
           ffmpeg -i intro_norm.mp3 -i mixed_norm.mp3 -i outro_norm.mp3 -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" -map "[outa]" -c:a libmp3lame -q:a 2 final_episode.mp3
 
-- name: 7. 完成した最終エピソードをSupabaseへ保存
+      - name: 7. 完成した最終エピソードをSupabaseへ保存
         run: |
-          # ⭕️ 保存先を「Podcast/」フォルダに変更
           curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/podcast-audio/Podcast/final_${{ env.SCRIPT_ID }}.mp3" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
@@ -83,6 +82,7 @@ jobs:
 
       - name: 8. Discordへ「完成通知」を送信
         run: |
-          # ⭕️ 通知するURLも「Podcast/」フォルダに変更
           FINAL_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/podcast-audio/Podcast/final_${{ env.SCRIPT_ID }}.mp3"
-          curl -H "Content-Type: application/json" -d "{\"content\": \"🎧 **BGMミックス完了！**\\nイントロ・BGM・アウトロの合成が完了し、本日の最終エピソードが書き出されました。\\n▶️ **完成版を聴く:**\\n${FINAL_URL}\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # 通知内容を安全なJSONファイルとして生成（構文エラー回避）
+          jq -n --arg url "$FINAL_URL" '{content: "🎧 **BGMミックス完了！**\nイントロ・BGM・アウトロの合成が完了し、本日の最終エピソードが書き出されました。\n▶️ **完成版を聴く:**\n\($url)"}' > discord_payload.json
+          curl -H "Content-Type: application/json" -d @discord_payload.json ${{ secrets.DISCORD_WEBHOOK_URL }}
