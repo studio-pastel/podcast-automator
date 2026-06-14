@@ -1,0 +1,88 @@
+name: Daily Podcast Automator
+
+on:
+  schedule:
+    # UTCの21:00 = 日本時間の朝6:00
+    # 0-4は日曜日〜木曜日（日本時間の月曜〜金曜の朝に該当）
+    - cron: '0 21 * * 0-4'
+  workflow_dispatch: # 手動でテスト実行するためのボタン
+
+jobs:
+  build-and-mix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 音声編集エンジン（FFmpeg等）の準備
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
+
+      - name: 2. ニュース取得（fetch-news）の実行
+        run: |
+          echo "Fetching today's news..."
+          curl -s -X POST "${{ secrets.EDGE_FUNCTION_BASE_URL }}/fetch-news" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          sleep 10
+
+      - name: 3. 台本・音声生成（generate-script）の実行
+        run: |
+          echo "Generating script and voice..."
+          curl -s -X POST "${{ secrets.EDGE_FUNCTION_BASE_URL }}/generate-script" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+
+      - name: 4. 最新データのメタ情報（BGM指示など）を取得
+        id: meta
+        run: |
+          LATEST=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/podcast_scripts?select=id,bgm_mood,audio_url&order=created_at.desc&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}")
+
+          SCRIPT_ID=$(echo $LATEST | jq -r '.[0].id')
+          BGM_MOOD=$(echo $LATEST | jq -r '.[0].bgm_mood')
+          VOICE_URL=$(echo $LATEST | jq -r '.[0].audio_url')
+
+          # AIのBGM指定が予期せぬ文字列だった場合は標準テーマにする
+          if [[ ! "$BGM_MOOD" =~ ^(calm|serious|tension|intro_theme)$ ]]; then
+            BGM_MOOD="intro_theme"
+          fi
+
+          echo "SCRIPT_ID=$SCRIPT_ID" >> $GITHUB_ENV
+          echo "BGM_MOOD=$BGM_MOOD" >> $GITHUB_ENV
+          echo "VOICE_URL=$VOICE_URL" >> $GITHUB_ENV
+
+      - name: 5. 音声素材（声・BGM）のダウンロード
+        run: |
+          # 声データのダウンロード
+          curl -s -o voice.wav "${{ env.VOICE_URL }}"
+
+          # BGMデータのダウンロード（Supabaseから）
+          DOWNLOAD_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/podcast-audio/bgm"
+          
+          curl -s -o intro.mp3 "$DOWNLOAD_URL/intro_theme.mp3"
+          curl -s -o outro.mp3 "$DOWNLOAD_URL/outro.mp3"
+          curl -s -o bgm.mp3 "$DOWNLOAD_URL/${{ env.BGM_MOOD }}.mp3"
+
+      - name: 6. FFmpegによるフルオート・ミキシング（合成）
+        run: |
+          echo "Mixing Audio..."
+          # 結合エラーを防ぐため、サンプリング周波数をプロ規格(44.1kHz)に統一
+          ffmpeg -i intro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
+          ffmpeg -i outro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_norm.mp3
+
+          # 1. 声の裏にBGMをループ再生で流す（BGM音量は10%に下げるダッキング処理）
+          ffmpeg -i voice.wav -stream_loop -1 -i bgm.mp3 -filter_complex "[0:a]aresample=44100,aformat=channel_layouts=stereo[v];[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.1[b];[v][b]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a libmp3lame -q:a 2 mixed_norm.mp3
+
+          # 2. イントロ ➔ BGM付きトーク ➔ アウトロ の順でガッチャンコする
+          ffmpeg -i intro_norm.mp3 -i mixed_norm.mp3 -i outro_norm.mp3 -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" -map "[outa]" -c:a libmp3lame -q:a 2 final_episode.mp3
+
+- name: 7. 完成した最終エピソードをSupabaseへ保存
+        run: |
+          # ⭕️ 保存先を「Podcast/」フォルダに変更
+          curl -X POST "${{ secrets.SUPABASE_URL }}/storage/v1/object/podcast-audio/Podcast/final_${{ env.SCRIPT_ID }}.mp3" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: audio/mpeg" \
+            --data-binary @final_episode.mp3
+
+      - name: 8. Discordへ「完成通知」を送信
+        run: |
+          # ⭕️ 通知するURLも「Podcast/」フォルダに変更
+          FINAL_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/podcast-audio/Podcast/final_${{ env.SCRIPT_ID }}.mp3"
+          curl -H "Content-Type: application/json" -d "{\"content\": \"🎧 **BGMミックス完了！**\\nイントロ・BGM・アウトロの合成が完了し、本日の最終エピソードが書き出されました。\\n▶️ **完成版を聴く:**\\n${FINAL_URL}\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
