@@ -71,7 +71,7 @@ jobs:
         run: |
           echo "Mixing Audio..."
           # 1. イントロを5秒でカット ＆ 音量を30%に調整（4秒目から1秒かけてフェードアウト）
-          ffmpeg -i intro.mp3 -t 5 -af "volume=0.3,afade=t=out:st=4:d=1" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
+          ffmpeg -i intro.mp3 -t 6 -af "volume=0.1,afade=t=out:st=4:d=2" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
           
           # 2. アウトロを15秒でカット ＆ 音量を50%に調整（13秒目から2秒かけてフェードアウト）
           ffmpeg -i outro.mp3 -t 15 -af "volume=0.5,afade=t=out:st=13:d=2" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_bgm_norm.mp3
