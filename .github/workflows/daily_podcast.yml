@@ -2,10 +2,8 @@ name: Daily Podcast Automator
 
 on:
   schedule:
-    # UTCの21:00 = 日本時間の朝6:00
-    # 0-4は日曜日〜木曜日（日本時間の月曜〜金曜の朝に該当）
     - cron: '0 21 * * 0-4'
-  workflow_dispatch: # 手動でテスト実行するためのボタン
+  workflow_dispatch:
 
 jobs:
   build-and-mix:
@@ -30,15 +28,30 @@ jobs:
       - name: 4. 最新データのメタ情報（BGM指示など）を取得
         id: meta
         run: |
-          LATEST=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/podcast_scripts?select=id,bgm_mood,audio_url&order=created_at.desc&limit=1" \
+          echo "Supabaseから最新エピソードの情報を取得しています..."
+          
+          # データベースへアクセス
+          LATEST=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/podcast_scripts?select=id,bgm_mood,audio_url&status=eq.completed&order=created_at.desc&limit=1" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}")
+
+          echo "✅ データベースからの生データ: $LATEST"
+
+          # ⭕️ データが正しく取れなかった場合の緊急停止システム
+          if [[ "$LATEST" == *"message"* ]] || [[ "$LATEST" == *"error"* ]] || [[ "$LATEST" == "[]" ]]; then
+            echo "❌ 【エラー】Supabaseからデータの取得を拒否されました（APIキーかURLが間違っている可能性が高いです）。"
+            exit 1
+          fi
 
           SCRIPT_ID=$(echo "$LATEST" | jq -r '.[0].id')
           BGM_MOOD=$(echo "$LATEST" | jq -r '.[0].bgm_mood')
           VOICE_URL=$(echo "$LATEST" | jq -r '.[0].audio_url')
 
-          # AIのBGM指定が予期せぬ文字列だった場合は標準テーマにする
+          if [[ "$VOICE_URL" == "null" || -z "$VOICE_URL" ]]; then
+            echo "❌ 【エラー】URLがnullです。"
+            exit 1
+          fi
+
           if [[ ! "$BGM_MOOD" =~ ^(calm|serious|tension|intro_theme)$ ]]; then
             BGM_MOOD="intro_theme"
           fi
@@ -49,6 +62,7 @@ jobs:
 
       - name: 5. 音声素材（声・BGM）のダウンロード
         run: |
+          echo "音声ファイル（$VOICE_URL）をダウンロード中..."
           curl -s -o voice.wav "${{ env.VOICE_URL }}"
           
           DOWNLOAD_URL="${{ secrets.SUPABASE_URL }}/storage/v1/object/public/podcast-audio/bgm"
@@ -62,10 +76,8 @@ jobs:
           ffmpeg -i intro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
           ffmpeg -i outro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_norm.mp3
 
-          # 声の裏にBGMをループ再生で流す（BGM音量は10%に下げる）
           ffmpeg -i voice.wav -stream_loop -1 -i bgm.mp3 -filter_complex "[0:a]aresample=44100,aformat=channel_layouts=stereo[v];[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.1[b];[v][b]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a libmp3lame -q:a 2 mixed_norm.mp3
 
-          # イントロ ➔ BGM付きトーク ➔ アウトロ の順で結合する
           ffmpeg -i intro_norm.mp3 -i mixed_norm.mp3 -i outro_norm.mp3 -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" -map "[outa]" -c:a libmp3lame -q:a 2 final_episode.mp3
 
       - name: 7. 完成した最終エピソードをSupabaseへ保存
