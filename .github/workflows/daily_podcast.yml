@@ -30,16 +30,12 @@ jobs:
         run: |
           echo "Supabaseから最新エピソードの情報を取得しています..."
           
-          # データベースへアクセス
           LATEST=$(curl -s -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/podcast_scripts?select=id,bgm_mood,audio_url&status=eq.completed&order=created_at.desc&limit=1" \
             -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}")
 
-          echo "✅ データベースからの生データ: $LATEST"
-
-          # ⭕️ データが正しく取れなかった場合の緊急停止システム
           if [[ "$LATEST" == *"message"* ]] || [[ "$LATEST" == *"error"* ]] || [[ "$LATEST" == "[]" ]]; then
-            echo "❌ 【エラー】Supabaseからデータの取得を拒否されました（APIキーかURLが間違っている可能性が高いです）。"
+            echo "❌ 【エラー】Supabaseからデータの取得を拒否されました。"
             exit 1
           fi
 
@@ -60,7 +56,7 @@ jobs:
           echo "BGM_MOOD=$BGM_MOOD" >> "$GITHUB_ENV"
           echo "VOICE_URL=$VOICE_URL" >> "$GITHUB_ENV"
 
-      - name: 5. 音声素材（声・BGM）のダウンロード
+      - name: 5. 音声素材（声・BGM・チャンネル登録ボイス）のダウンロード
         run: |
           echo "音声ファイル（$VOICE_URL）をダウンロード中..."
           curl -s -o voice.wav "${{ env.VOICE_URL }}"
@@ -69,16 +65,30 @@ jobs:
           curl -s -o intro.mp3 "$DOWNLOAD_URL/intro_theme.mp3"
           curl -s -o outro.mp3 "$DOWNLOAD_URL/outro.mp3"
           curl -s -o bgm.mp3 "$DOWNLOAD_URL/${{ env.BGM_MOOD }}.mp3"
+          
+          # ⭕️ レンのチャンネル登録ボイスをダウンロード
+          curl -s -o subscribe.wav "$DOWNLOAD_URL/subscribe.wav"
 
-      - name: 6. FFmpegによるフルオート・ミキシング（合成）
+      - name: 6. FFmpegによるフルオート・ミキシング（プロ演出版）
         run: |
           echo "Mixing Audio..."
-          ffmpeg -i intro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
-          ffmpeg -i outro.mp3 -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_norm.mp3
-
+          # 1. イントロを5秒でカット（4秒目から1秒かけてフェードアウト）
+          ffmpeg -i intro.mp3 -t 5 -af "afade=t=out:st=4:d=1" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
+          
+          # 2. アウトロを15秒でカットし、声の邪魔にならないよう音量を40%に下げる（13秒目から2秒かけてフェードアウト）
+          ffmpeg -i outro.mp3 -t 15 -af "volume=0.4,afade=t=out:st=13:d=2" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_bgm_norm.mp3
+          
+          # 3. 本編の声＋裏で流すBGM（音量10%）の合成
           ffmpeg -i voice.wav -stream_loop -1 -i bgm.mp3 -filter_complex "[0:a]aresample=44100,aformat=channel_layouts=stereo[v];[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.1[b];[v][b]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a libmp3lame -q:a 2 mixed_norm.mp3
 
-          ffmpeg -i intro_norm.mp3 -i mixed_norm.mp3 -i outro_norm.mp3 -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" -map "[outa]" -c:a libmp3lame -q:a 2 final_episode.mp3
+          # 4. レンの声をフォーマット統一（開始から「2秒後」に再生されるよう遅延させる）
+          ffmpeg -i subscribe.wav -filter_complex "adelay=2000|2000,aresample=44100,aformat=channel_layouts=stereo" -c:a libmp3lame -q:a 2 subscribe_norm.mp3
+          
+          # 5. アウトロBGMとレンの声を合成
+          ffmpeg -i outro_bgm_norm.mp3 -i subscribe_norm.mp3 -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a libmp3lame -q:a 2 outro_final.mp3
+          
+          # 6. すべてを結合（イントロ5秒 ＋ 本編 ＋ アウトロ15秒）
+          ffmpeg -i intro_norm.mp3 -i mixed_norm.mp3 -i outro_final.mp3 -filter_complex "[0:a][1:a][2:a]concat=n=3:v=0:a=1[outa]" -map "[outa]" -c:a libmp3lame -q:a 2 final_episode.mp3
 
       - name: 7. 完成した最終エピソードをSupabaseへ保存
         run: |
