@@ -70,11 +70,11 @@ jobs:
       - name: 6. FFmpegによるフルオート・ミキシング（プロ演出版・大吾さん指定音量版）
         run: |
           echo "Mixing Audio..."
-          # 1. イントロを5秒でカット ＆ 音量を50%に調整（4秒目から1秒かけてフェードアウト）
-          ffmpeg -i intro.mp3 -t 5 -af "volume=0.5,afade=t=out:st=4:d=1" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
+          # 1. イントロを5秒でカット ＆ 音量を30%に調整（4秒目から1秒かけてフェードアウト）
+          ffmpeg -i intro.mp3 -t 5 -af "volume=0.3,afade=t=out:st=4:d=1" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 intro_norm.mp3
           
-          # 2. アウトロを15秒でカット ＆ 音量を60%に調整（13秒目から2秒かけてフェードアウト）
-          ffmpeg -i outro.mp3 -t 15 -af "volume=0.6,afade=t=out:st=13:d=2" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_bgm_norm.mp3
+          # 2. アウトロを15秒でカット ＆ 音量を50%に調整（13秒目から2秒かけてフェードアウト）
+          ffmpeg -i outro.mp3 -t 15 -af "volume=0.5,afade=t=out:st=13:d=2" -ar 44100 -ac 2 -c:a libmp3lame -q:a 2 outro_bgm_norm.mp3
           
           # 3. 本編の声＋裏で流すBGM（声を引き立てるため5%にキープ）
           ffmpeg -i voice.wav -stream_loop -1 -i bgm.mp3 -filter_complex "[0:a]aresample=44100,aformat=channel_layouts=stereo[v];[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.05[b];[v][b]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a libmp3lame -q:a 2 mixed_norm.mp3
